@@ -341,83 +341,27 @@ function yesterdayIso() {
   return y + "-" + m + "-" + dd;
 }
 function isEveningSlot() { return new Date().getHours() >= EVENING_HOUR; }
-function pairCacheKey(date) { return "daybook:morning-id:" + date; }
+
+/* local cache — v0 mode-detection and pair-linking source of truth.
+   v1 cleanup: replace with memory.read date-filter once the bridge ships it. */
+function localKey(date, slot, field) {
+  return "daybook:" + date + ":" + slot + ":" + field;
+}
+function localGet(date, slot, field) {
+  try { return localStorage.getItem(localKey(date, slot, field)); }
+  catch (_) { return null; }
+}
+function localSet(date, slot, field, value) {
+  try { localStorage.setItem(localKey(date, slot, field), value); }
+  catch (_) { /* private mode / quota — best-effort */ }
+}
 
 /* ----------------------------------------------------------------------
-   Bridge calls
+   Bridge calls — one llm.complete per session opening (prompt generation).
+   No structured-output state fetch: small/local models drop strict JSON,
+   and a brand-new brain has nothing daybook-tagged to retrieve anyway.
+   localStorage is the v0 mode-detection authority.
 ---------------------------------------------------------------------- */
-
-/* ask the brain for: today's morning, today's evening, yesterday's evening.
-   we request strict JSON so we can parse without hand-rolling extraction. */
-async function fetchState(today, yesterday) {
-  const system =
-    "You are this person's brain. They use a Daybook app that writes two " +
-    "episodic entries per day: one tagged metadata.kind='daybook-morning' " +
-    "and one tagged metadata.kind='daybook-evening'. Each entry's content " +
-    "is plain prose. Search your corpus for entries from these dates and " +
-    "kinds.\n\n" +
-    "Return EXACTLY one JSON object and nothing else — no preamble, no " +
-    "code fences, no commentary. Shape:\n" +
-    "{\n" +
-    '  "today_morning":     <verbatim entry text, or null>,\n' +
-    '  "today_evening":     <verbatim entry text, or null>,\n' +
-    '  "yesterday_evening": <verbatim entry text, or null>\n' +
-    "}\n\n" +
-    "Rules: if you cannot find an entry for a slot, return null for that " +
-    "field. Do NOT fabricate text. Do NOT include any field other than " +
-    "these three. Return only the JSON.";
-
-  const user =
-    "Today: " + today + "\n" +
-    "Yesterday: " + yesterday + "\n" +
-    "Find: today_morning (kind=daybook-morning, dated " + today + "), " +
-    "today_evening (kind=daybook-evening, dated " + today + "), " +
-    "yesterday_evening (kind=daybook-evening, dated " + yesterday + ").";
-
-  const res = await Bridge.call("llm.complete", {
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-  }, 60000);
-
-  if (!res || !res.ok || !res.result || !res.result.text) return null;
-  return parseStateJson(res.result.text);
-}
-
-/* model output is text — try to pluck a JSON object out of it, tolerantly. */
-function parseStateJson(text) {
-  const s = String(text || "").trim();
-  const candidates = [];
-  // strip common code-fence wrappers
-  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced) candidates.push(fenced[1].trim());
-  // first {...} balanced-ish slice
-  const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first >= 0 && last > first) candidates.push(s.slice(first, last + 1));
-  candidates.push(s);
-  for (const c of candidates) {
-    try {
-      const obj = JSON.parse(c);
-      if (obj && typeof obj === "object") {
-        return {
-          today_morning:     normalizeField(obj.today_morning),
-          today_evening:     normalizeField(obj.today_evening),
-          yesterday_evening: normalizeField(obj.yesterday_evening),
-        };
-      }
-    } catch (_) { /* try next candidate */ }
-  }
-  return null;
-}
-function normalizeField(v) {
-  if (v == null) return null;
-  if (typeof v !== "string") return null;
-  const t = v.trim();
-  if (!t || /^(null|none|none_found|n\/a)$/i.test(t)) return null;
-  return t;
-}
 
 /* ask the brain to generate the morning prompt. yesterday's evening is
    passed in verbatim if known; if not, the brain still grounds in corpus. */
@@ -643,9 +587,10 @@ function viewPrompt(slot, promptText, ctx) {
     if (!content) return;
     save.disabled = true;
     save.textContent = "Saving…";
+    const today = todayIso();
     const pairedId = isMorning
       ? null
-      : (localStorage.getItem(pairCacheKey(todayIso())) || null);
+      : (localGet(today, "morning", "id") || null);
     const out = await saveEntry({
       kind: isMorning ? "daybook-morning" : "daybook-evening",
       content: content,
@@ -660,10 +605,10 @@ function viewPrompt(slot, promptText, ctx) {
         : "Save failed — your brain didn't answer.";
       return;
     }
-    // cache morning id so evening can link to it later
-    if (isMorning && out.id) {
-      try { localStorage.setItem(pairCacheKey(todayIso()), out.id); } catch (_) {}
-    }
+    // cache today's slot content + id so a refresh routes to already-written,
+    // and so an evening visit can link to today's morning id.
+    localSet(today, slot, "content", content);
+    if (out.id) localSet(today, slot, "id", out.id);
     saved.style.color = "var(--gold)";
     saved.textContent = "Saved to your brain.";
     // re-render as already-written
@@ -678,67 +623,55 @@ function viewPrompt(slot, promptText, ctx) {
 }
 
 /* ----------------------------------------------------------------------
-   Boot — decide the mode and route to the right view
+   Boot — localStorage drives mode detection; the brain is asked exactly
+   once, for the prompt itself. Day-1 friendly, small-model friendly.
 ---------------------------------------------------------------------- */
 async function boot() {
   modeTag.textContent = "";
-  renderHeader(null);
 
   if (Bridge.standalone) {
+    renderHeader(null);
     viewStandalone();
     return;
   }
 
-  viewPreparing("Opening your daybook");
-
   const today = todayIso();
   const yesterday = yesterdayIso();
-  const state = await fetchState(today, yesterday);
-
-  // host present but state fetch failed — show a clear "brain didn't answer" notice
-  if (!state) {
-    viewBrainUnreachable();
-    return;
-  }
-
-  renderHeader(state);
-
   const slot = isEveningSlot() ? "evening" : "morning";
 
-  // already-written for the current slot → show it inline
-  if (slot === "morning" && state.today_morning) {
-    viewAlreadyWritten("morning", state.today_morning);
-    return;
-  }
-  if (slot === "evening" && state.today_evening) {
-    viewAlreadyWritten("evening", state.today_evening);
+  const yesterdayEvening = localGet(yesterday, "evening", "content");
+  renderHeader({ yesterday_evening: yesterdayEvening });
+
+  // already-written for the current slot → show it inline, no brain call.
+  const localToday = localGet(today, slot, "content");
+  if (localToday) {
+    viewAlreadyWritten(slot, localToday);
     return;
   }
 
-  // otherwise generate the prompt for this slot
   viewPreparing("Your brain is choosing what to ask");
+
+  const todayMorning = (slot === "evening")
+    ? localGet(today, "morning", "content")
+    : null;
 
   let prompt = null;
   if (slot === "morning") {
-    prompt = await generateMorningPrompt(today, state.yesterday_evening);
+    prompt = await generateMorningPrompt(today, yesterdayEvening);
+  } else if (todayMorning) {
+    prompt = await generateEveningPrompt(today, todayMorning, yesterdayEvening);
   } else {
-    // evening — needs the morning intention. If absent (operator skipped
-    // the morning), fall back to a corpus-grounded evening question.
-    if (state.today_morning) {
-      prompt = await generateEveningPrompt(today, state.today_morning, state.yesterday_evening);
-    } else {
-      prompt = await generateMorningPrompt(today, state.yesterday_evening);
-      // (it's evening, but there's no morning to quote — treat like a fresh
-      // intention-shaped question; the slot still saves as evening so a
-      // missed morning doesn't compound.)
-    }
+    // evening slot with no cached morning — treat as a fresh
+    // intention-shaped question; saves still as evening so a missed
+    // morning doesn't compound across days.
+    prompt = await generateMorningPrompt(today, yesterdayEvening);
   }
 
   if (!prompt) {
     viewBrainUnreachable();
     return;
   }
-  viewPrompt(slot, prompt, state);
+  viewPrompt(slot, prompt);
 }
 
 boot();

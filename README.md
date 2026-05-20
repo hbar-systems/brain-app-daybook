@@ -34,19 +34,25 @@ reasoner and memory through the brain-app `postMessage` bridge:
 - `memory.write` — saving the entry appends one episodic record with
   `metadata.kind = "daybook-morning"` or `"daybook-evening"`.
 
-The app picks its mode from the wall clock and what is already saved for
-today in episodic. No mode switcher in the UI — one mode at a time:
+The app picks its mode from the wall clock and `localStorage`. No mode
+switcher in the UI — one mode at a time:
 
 - **Morning mode** (default before the evening hour) — brain proposes the
   morning prompt; textarea + Save. Default evening hour is 18:00 local.
 - **Evening mode** (default at or after the evening hour) — brain quotes
   the morning intention and asks what happened; textarea + Save.
-- **Already-written mode** — if today's slot is filled, the saved entry
-  renders inline (read-only). No second write to the same slot in v0.
+- **Already-written mode** — if today's slot has been saved on this
+  browser, the saved entry renders inline (read-only). No second write
+  to the same slot in v0.
 
 A small header line always shows today's date and a one-line peek at
-yesterday's evening entry, so the operator sees "yesterday I wrote: …"
-without leaving the app.
+yesterday's evening entry, when one was saved on this browser.
+
+The brain is asked exactly once per opening, for the prompt itself. The
+brain's RAG retrieval grounds the prompt in the operator's corpus — the
+app does not pre-fetch the day's state from the brain. This keeps the app
+day-1 friendly (no daybook-tagged entries to retrieve yet) and small-model
+friendly (no fragile structured-output round-trip).
 
 ## Permissions
 
@@ -59,16 +65,17 @@ See `brain-app.yaml` for the full manifest and declared layers.
 
 ## Pairing model
 
-- Morning save → `metadata.kind = "daybook-morning"`. The returned entry id
-  is cached in `localStorage` keyed by today's date.
-- Evening save → `metadata.kind = "daybook-evening"`,
-  `metadata.paired_id = <morning entry id>` when the cached id is available.
-  When the evening visit happens on a different browser/device than the
-  morning, the cached id is absent and `paired_id` is omitted; the pair is
-  still derivable by date.
+- Morning save → one episodic entry with `metadata.kind = "daybook-morning"`.
+  The returned entry id and the entry content are cached in `localStorage`,
+  keyed by today's date.
+- Evening save → one episodic entry with `metadata.kind = "daybook-evening"`,
+  and `metadata.paired_id = <morning entry id>` when the cached id is
+  available. When the evening visit happens on a different browser/device
+  than the morning, the cached id is absent and `paired_id` is omitted; the
+  pair is still derivable by date.
 
 The v1 cleanup is `memory.read` with a date filter — once the bridge ships
-it, mode detection and pair lookup move off the `llm.complete` round-trip.
+it, mode detection and pair lookup move off `localStorage`.
 
 ## Standalone
 
