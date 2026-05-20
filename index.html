@@ -54,7 +54,7 @@
     max-width: 640px;
   }
 
-  header.app { text-align: center; margin-bottom: 26px; }
+  header.app { text-align: center; margin-bottom: 22px; }
   header.app .glyph {
     font-size: 13px;
     letter-spacing: 0.42em;
@@ -67,17 +67,27 @@
     letter-spacing: 0.02em;
     margin-top: 8px;
   }
+  header.app .sub {
+    color: var(--ink-dim);
+    font-style: italic;
+    font-size: 15px;
+    margin-top: 8px;
+    line-height: 1.45;
+    max-width: 460px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  header.app .sub b { color: var(--gold); font-weight: 400; }
 
   .meta {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 3px;
-    margin-bottom: 30px;
+    margin-bottom: 26px;
     color: var(--ink-dim);
     font-size: 13.5px;
     font-style: italic;
-    min-height: 38px;
   }
   .meta .date {
     color: var(--ink-dim);
@@ -266,6 +276,11 @@
     <header class="app">
       <div class="glyph">&#8463; &nbsp;hbar.daybook</div>
       <h1>Daybook</h1>
+      <div class="sub">
+        <b>Morning</b> — your brain asks one question to set the day.<br>
+        <b>Evening</b> — it quotes that morning back, and asks what happened.<br>
+        You write the answer. It stays in your brain.
+      </div>
     </header>
     <div id="meta" class="meta"></div>
     <div id="stage"></div>
@@ -395,12 +410,9 @@ async function generateMorningPrompt(today, yesterdayEvening) {
       { role: "system", content: system },
       { role: "user", content: userParts.join("\n\n") },
     ],
-  }, 120000);
+  }, 180000);
 
-  if (res && res.ok && res.result && res.result.text) {
-    return cleanPrompt(res.result.text);
-  }
-  return null;
+  return promptResult(res);
 }
 
 /* ask the brain to generate the evening prompt. the morning intention is
@@ -436,12 +448,23 @@ async function generateEveningPrompt(today, morningText, yesterdayEvening) {
       { role: "system", content: system },
       { role: "user", content: userParts.join("\n\n") },
     ],
-  }, 120000);
+  }, 180000);
 
+  return promptResult(res);
+}
+
+/* normalize a Bridge.call reply into { ok, text?, code? } so boot() can
+   route on the specific failure mode and the unreachable view can show
+   the actual reason. */
+function promptResult(res) {
   if (res && res.ok && res.result && res.result.text) {
-    return cleanPrompt(res.result.text);
+    const cleaned = cleanPrompt(res.result.text);
+    if (cleaned) return { ok: true, text: cleaned };
+    return { ok: false, code: "empty_text" };
   }
-  return null;
+  if (res && res.error && res.error.code) return { ok: false, code: res.error.code };
+  if (res && res.ok) return { ok: false, code: "empty_text" };
+  return { ok: false, code: "no_reply" };
 }
 
 function cleanPrompt(t) {
@@ -484,11 +507,13 @@ function renderHeader(state) {
   meta.innerHTML = "";
   const d = el("div", "date", todayIso());
   meta.appendChild(d);
-  const peekText = (state && state.yesterday_evening)
-    ? "yesterday evening: " + onelinePeek(state.yesterday_evening)
-    : "no entry from yesterday evening";
-  const p = el("div", "peek", escapeHtml(peekText));
-  meta.appendChild(p);
+  // peek only when we actually have a previous evening to show — never
+  // a "no entry" placeholder, which reads as a malfunction on first use.
+  if (state && state.yesterday_evening) {
+    const p = el("div", "peek", escapeHtml(
+      "yesterday evening, you wrote: " + onelinePeek(state.yesterday_evening)));
+    meta.appendChild(p);
+  }
 }
 function onelinePeek(text) {
   const oneLine = String(text).replace(/\s+/g, " ").trim();
@@ -516,14 +541,35 @@ function viewStandalone() {
   show(v);
 }
 
-function viewBrainUnreachable() {
-  modeTag.textContent = "host present · brain did not answer";
+function viewBrainUnreachable(code) {
+  modeTag.textContent = "host present · " + (code || "no reply");
   const v = el("div", "view");
+
+  let headline, body;
+  if (code === "timeout") {
+    headline = "Your brain took too long to answer.";
+    body =
+      "The brain is reachable, but generating today's prompt didn't finish " +
+      "within 3 minutes. Local models can be slow on first call — try " +
+      "again, or switch your brain to a faster model in Settings.";
+  } else if (code === "empty_text") {
+    headline = "Your brain replied, but didn't generate a question.";
+    body =
+      "This usually means the selected model returned an empty completion. " +
+      "Check that a model is selected in your brain's Settings, and that " +
+      "your BYOK key (if used) is valid.";
+  } else {
+    headline = "Your brain didn't answer.";
+    body =
+      "The bridge call to your brain returned no reply. Open <b>Oracle</b> " +
+      "or <b>Self-Portrait</b> in the same brain — if those also fail, the " +
+      "brain's model isn't reachable and the fix is in your brain's " +
+      "Settings, not in Daybook.";
+  }
+
   v.appendChild(el("div", "notice",
-    "<b>Your brain didn't answer.</b><br><br>" +
-    "Daybook needs the brain to read the day so far and to generate " +
-    "today's prompt. Try again in a moment — if it keeps failing, check " +
-    "that your brain's model is selected and reachable."));
+    "<b>" + escapeHtml(headline) + "</b><br><br>" + body));
+
   const again = el("button", "cta ghost", "Try again");
   again.style.marginTop = "16px";
   again.onclick = boot;
@@ -655,23 +701,23 @@ async function boot() {
     ? localGet(today, "morning", "content")
     : null;
 
-  let prompt = null;
+  let out;
   if (slot === "morning") {
-    prompt = await generateMorningPrompt(today, yesterdayEvening);
+    out = await generateMorningPrompt(today, yesterdayEvening);
   } else if (todayMorning) {
-    prompt = await generateEveningPrompt(today, todayMorning, yesterdayEvening);
+    out = await generateEveningPrompt(today, todayMorning, yesterdayEvening);
   } else {
     // evening slot with no cached morning — treat as a fresh
     // intention-shaped question; saves still as evening so a missed
     // morning doesn't compound across days.
-    prompt = await generateMorningPrompt(today, yesterdayEvening);
+    out = await generateMorningPrompt(today, yesterdayEvening);
   }
 
-  if (!prompt) {
-    viewBrainUnreachable();
+  if (!out.ok) {
+    viewBrainUnreachable(out.code);
     return;
   }
-  viewPrompt(slot, prompt);
+  viewPrompt(slot, out.text);
 }
 
 boot();
