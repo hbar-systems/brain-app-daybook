@@ -1,0 +1,60 @@
+# Daybook — brain-app manifest
+#
+# A twice-daily reflection surface where the brain *generates* the prompt
+# (not the operator), grounded in yesterday's entry and recurring themes in
+# the operator's corpus. The intention/reflection text is written back to
+# episodic memory via `memory.write`. Each evening entry references its
+# morning pair, so the daily arc stays linked for later retrieval.
+#
+# Schema: registry/schema/brain/app.schema.json (in hbar.world)
+# Created: 2026-05-20
+#
+# Uses BOTH `llm.complete` and `memory.write` bridge intents. Standalone
+# (no host) the surface still renders a "no brain connected" message —
+# Daybook is meaningless without a brain to ask, so it does not fabricate
+# local prompts.
+
+dialect: brain-app/v1
+id: daybook
+name: Daybook
+version: 0.1.0
+description: Twice a day, your brain asks you something it actually knows to ask. You answer. The arc stays linked.
+license: AGPL-3.0
+
+author:
+  name: hbar
+  url: https://hbar.systems
+  contact: hello@hbar.systems
+
+repo: https://github.com/hbar-systems/brain-app-daybook
+
+tab:
+  label: Daybook
+  route: /daybook
+  order: 20
+
+entries:
+  ui_bundle: ./
+
+# The prompt is generated via `llm.complete`, which RAG-retrieves over the
+# read-mode layers below so the question is shaped by what the operator has
+# been writing about, not a generic template. The morning intention and
+# evening reflection are appended to episodic memory via `memory.write`.
+permissions:
+  - llm.invoke
+  - memory.write
+
+requires_layers:
+  - layer: semantic
+    mode: read
+  - layer: episodic
+    mode: read
+  - layer: episodic
+    mode: append
+
+requires_endpoints:
+  - POST /chat/rag
+  - POST /memory/append
+
+engines:
+  brainfoundry-nous: ">=0.8.4"

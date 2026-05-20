@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<!--
+  Daybook — a brain-app for BrainFoundry brains.
+  Created: 2026-05-20
+
+  Twice a day, your brain asks you something it actually knows to ask.
+
+  - Morning: the brain proposes one short, concrete question grounded in
+    recurring themes in your corpus (and last night's reflection, if any).
+  - Evening: the brain quotes your morning intention back to you and asks
+    what actually happened.
+
+  Both entries are appended to episodic memory. The evening entry references
+  its morning pair via `metadata.paired_id` so the daily arc stays linked.
+
+  One self-contained file. No dependencies, no CDN, no build. Daybook is
+  meaningless without a brain to ask — opened standalone it shows a clear
+  "no brain connected" message rather than inventing a local prompt.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Daybook</title>
+<style>
+  :root {
+    --ink: #ece3d0;
+    --ink-dim: #9a8f78;
+    --ink-faint: #5e5644;
+    --paper: #14110c;
+    --paper-2: #1d1813;
+    --gold: #c9a24b;
+    --gold-dim: #6f5c30;
+    --line: #2c2519;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(1100px 700px at 50% -10%, #221b12 0%, var(--paper) 60%);
+    color: var(--ink);
+    font-family: var(--serif);
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    min-height: 100%;
+    padding: 38px 22px 60px;
+    line-height: 1.5;
+  }
+  #frame {
+    width: 100%;
+    max-width: 640px;
+  }
+
+  header.app { text-align: center; margin-bottom: 26px; }
+  header.app .glyph {
+    font-size: 13px;
+    letter-spacing: 0.42em;
+    color: var(--gold);
+    text-transform: uppercase;
+  }
+  header.app h1 {
+    font-weight: 400;
+    font-size: 33px;
+    letter-spacing: 0.02em;
+    margin-top: 8px;
+  }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    margin-bottom: 30px;
+    color: var(--ink-dim);
+    font-size: 13.5px;
+    font-style: italic;
+    min-height: 38px;
+  }
+  .meta .date {
+    color: var(--ink-dim);
+    font-style: normal;
+    letter-spacing: 0.06em;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 12.5px;
+  }
+  .meta .peek {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink-faint);
+  }
+
+  .view { animation: rise 0.5s ease both; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  button {
+    font-family: var(--serif);
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: inherit;
+  }
+  .cta {
+    margin-top: 18px;
+    border: 1px solid var(--gold-dim);
+    color: var(--gold);
+    background: var(--paper-2);
+    padding: 12px 26px;
+    font-size: 16px;
+    letter-spacing: 0.04em;
+    border-radius: 3px;
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+  }
+  .cta:hover { background: #241d12; border-color: var(--gold); color: var(--ink); }
+  .cta:disabled { opacity: 0.4; cursor: default; }
+  .cta.ghost { color: var(--ink-dim); border-color: var(--line); }
+  .cta.ghost:hover { color: var(--ink); border-color: var(--gold-dim); }
+
+  /* loading pulse */
+  .preparing { text-align: center; padding: 36px 0; }
+  .preparing .pulse {
+    font-size: 13px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--gold);
+    animation: breathe 1.9s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+  .preparing .note { color: var(--ink-dim); font-style: italic; margin-top: 14px; font-size: 14px; }
+
+  /* prompt mode */
+  .slot-tag {
+    text-align: center;
+    color: var(--gold);
+    font-size: 11.5px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .prompt {
+    text-align: center;
+    font-size: 23px;
+    line-height: 1.36;
+    font-style: italic;
+    margin-bottom: 26px;
+    color: var(--ink);
+  }
+  textarea.entry {
+    width: 100%;
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.55;
+    padding: 16px 18px;
+    resize: vertical;
+    min-height: 200px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  textarea.entry:focus {
+    outline: none;
+    border-color: var(--gold-dim);
+    box-shadow: 0 0 18px rgba(201, 162, 75, 0.12);
+  }
+  textarea.entry::placeholder { color: var(--ink-faint); font-style: italic; }
+
+  .actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .saved-flag {
+    text-align: center;
+    color: var(--gold);
+    font-style: italic;
+    font-size: 14px;
+    margin-top: 14px;
+    min-height: 18px;
+  }
+
+  /* already-written mode */
+  .booklet {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background:
+      linear-gradient(180deg, #1b160f 0%, var(--paper-2) 100%);
+    padding: 26px 28px 22px;
+  }
+  .booklet .plate {
+    text-align: center;
+    font-size: 12px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 4px;
+  }
+  .booklet .stamp {
+    text-align: center;
+    color: var(--ink-dim);
+    font-size: 13px;
+    font-style: italic;
+    margin-bottom: 18px;
+  }
+  .booklet .entry-body {
+    font-size: 16.5px;
+    color: var(--ink);
+    white-space: pre-wrap;
+  }
+  .booklet .entry-body.collapsed {
+    max-height: 9.5em;
+    overflow: hidden;
+    position: relative;
+  }
+  .booklet .entry-body.collapsed::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: 0; height: 3em;
+    background: linear-gradient(180deg, rgba(29,24,19,0) 0%, var(--paper-2) 90%);
+    pointer-events: none;
+  }
+  .booklet .expand {
+    display: block;
+    margin: 14px auto 0;
+    font-size: 12.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--gold);
+    background: none;
+  }
+  .booklet .expand:hover { color: var(--ink); }
+
+  /* notice (standalone / errors) */
+  .notice {
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 22px 24px;
+    text-align: center;
+    color: var(--ink-dim);
+    font-style: italic;
+    font-size: 15px;
+  }
+  .notice b { color: var(--gold); font-weight: 400; font-style: normal; }
+
+  .mode-tag {
+    text-align: center;
+    margin-top: 26px;
+    font-size: 11.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--gold-dim);
+  }
+</style>
+</head>
+<body>
+  <div id="frame">
+    <header class="app">
+      <div class="glyph">&#8463; &nbsp;hbar.daybook</div>
+      <h1>Daybook</h1>
+    </header>
+    <div id="meta" class="meta"></div>
+    <div id="stage"></div>
+    <div id="modeTag" class="mode-tag"></div>
+  </div>
+
+<script>
+"use strict";
+
+/* ----------------------------------------------------------------------
+   Bridge — postMessage to the host brain. Standalone (no host, or no reply)
+   it resolves with `ok:false` and the caller decides what to do.
+---------------------------------------------------------------------- */
+const Bridge = (() => {
+  const standalone = (window.parent === window);
+  const pending = new Map();
+  let seq = 0;
+  window.addEventListener("message", (e) => {
+    const m = e.data;
+    if (!m || m.type !== "reply" || !pending.has(m.request_id)) return;
+    pending.get(m.request_id).resolve(m);
+    pending.delete(m.request_id);
+  });
+  function call(type, payload, timeoutMs) {
+    if (standalone) return Promise.resolve({ ok: false, error: { code: "standalone" } });
+    const request_id = "db-" + (++seq) + "-" + Date.now();
+    return new Promise((resolve) => {
+      pending.set(request_id, { resolve });
+      window.parent.postMessage({ type, payload, request_id }, "*");
+      setTimeout(() => {
+        if (pending.has(request_id)) {
+          pending.delete(request_id);
+          resolve({ ok: false, error: { code: "timeout" } });
+        }
+      }, timeoutMs || 60000);
+    });
+  }
+  return { standalone, call };
+})();
+
+/* ---------------------------------------------------------------------- */
+const stage = document.getElementById("stage");
+const meta = document.getElementById("meta");
+const modeTag = document.getElementById("modeTag");
+
+/* configurable: hour (0-23, local) at which evening mode takes over */
+const EVENING_HOUR = 18;
+
+function show(node) { stage.innerHTML = ""; stage.appendChild(node); }
+function el(tag, cls, html) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (html != null) n.innerHTML = html;
+  return n;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function todayIso() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return y + "-" + m + "-" + dd;
+}
+function yesterdayIso() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return y + "-" + m + "-" + dd;
+}
+function isEveningSlot() { return new Date().getHours() >= EVENING_HOUR; }
+function pairCacheKey(date) { return "daybook:morning-id:" + date; }
+
+/* ----------------------------------------------------------------------
+   Bridge calls
+---------------------------------------------------------------------- */
+
+/* ask the brain for: today's morning, today's evening, yesterday's evening.
+   we request strict JSON so we can parse without hand-rolling extraction. */
+async function fetchState(today, yesterday) {
+  const system =
+    "You are this person's brain. They use a Daybook app that writes two " +
+    "episodic entries per day: one tagged metadata.kind='daybook-morning' " +
+    "and one tagged metadata.kind='daybook-evening'. Each entry's content " +
+    "is plain prose. Search your corpus for entries from these dates and " +
+    "kinds.\n\n" +
+    "Return EXACTLY one JSON object and nothing else — no preamble, no " +
+    "code fences, no commentary. Shape:\n" +
+    "{\n" +
+    '  "today_morning":     <verbatim entry text, or null>,\n' +
+    '  "today_evening":     <verbatim entry text, or null>,\n' +
+    '  "yesterday_evening": <verbatim entry text, or null>\n' +
+    "}\n\n" +
+    "Rules: if you cannot find an entry for a slot, return null for that " +
+    "field. Do NOT fabricate text. Do NOT include any field other than " +
+    "these three. Return only the JSON.";
+
+  const user =
+    "Today: " + today + "\n" +
+    "Yesterday: " + yesterday + "\n" +
+    "Find: today_morning (kind=daybook-morning, dated " + today + "), " +
+    "today_evening (kind=daybook-evening, dated " + today + "), " +
+    "yesterday_evening (kind=daybook-evening, dated " + yesterday + ").";
+
+  const res = await Bridge.call("llm.complete", {
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+  }, 60000);
+
+  if (!res || !res.ok || !res.result || !res.result.text) return null;
+  return parseStateJson(res.result.text);
+}
+
+/* model output is text — try to pluck a JSON object out of it, tolerantly. */
+function parseStateJson(text) {
+  const s = String(text || "").trim();
+  const candidates = [];
+  // strip common code-fence wrappers
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced) candidates.push(fenced[1].trim());
+  // first {...} balanced-ish slice
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first >= 0 && last > first) candidates.push(s.slice(first, last + 1));
+  candidates.push(s);
+  for (const c of candidates) {
+    try {
+      const obj = JSON.parse(c);
+      if (obj && typeof obj === "object") {
+        return {
+          today_morning:     normalizeField(obj.today_morning),
+          today_evening:     normalizeField(obj.today_evening),
+          yesterday_evening: normalizeField(obj.yesterday_evening),
+        };
+      }
+    } catch (_) { /* try next candidate */ }
+  }
+  return null;
+}
+function normalizeField(v) {
+  if (v == null) return null;
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  if (!t || /^(null|none|none_found|n\/a)$/i.test(t)) return null;
+  return t;
+}
+
+/* ask the brain to generate the morning prompt. yesterday's evening is
+   passed in verbatim if known; if not, the brain still grounds in corpus. */
+async function generateMorningPrompt(today, yesterdayEvening) {
+  const system =
+    "You are this person's own brain. It is the morning of " + today + ". " +
+    "Ask them ONE short, concrete question to set today's intention.\n\n" +
+    "Constraints:\n" +
+    "- Return JUST the prompt text. No preamble, no 'Here's your prompt:', " +
+    "no surrounding quotes. The text you return becomes a heading.\n" +
+    "- Prefer ONE short, concrete question that references a recurring " +
+    "theme in their writing OR yesterday's evening reflection. Do not ask " +
+    "the generic 'what is your intention today?'.\n" +
+    "- NEVER fabricate quoted text. If you reference yesterday's evening, " +
+    "quote it only if it is provided below or you can retrieve it verbatim " +
+    "from the corpus.\n" +
+    "- At most two short sentences.";
+
+  const userParts = [];
+  if (yesterdayEvening) {
+    userParts.push(
+      "Yesterday evening they wrote (verbatim):\n\n\"\"\"\n" +
+      yesterdayEvening + "\n\"\"\"");
+  } else {
+    userParts.push("No entry from yesterday evening is available.");
+  }
+  userParts.push("Generate the morning prompt now.");
+
+  const res = await Bridge.call("llm.complete", {
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: userParts.join("\n\n") },
+    ],
+  }, 120000);
+
+  if (res && res.ok && res.result && res.result.text) {
+    return cleanPrompt(res.result.text);
+  }
+  return null;
+}
+
+/* ask the brain to generate the evening prompt. the morning intention is
+   quoted verbatim back at the operator. */
+async function generateEveningPrompt(today, morningText, yesterdayEvening) {
+  const system =
+    "You are this person's own brain. It is the evening of " + today + ". " +
+    "They wrote a morning intention earlier today. Quote it verbatim back " +
+    "to them and ask ONE short, concrete question about what actually " +
+    "happened — comparison, not interrogation.\n\n" +
+    "Constraints:\n" +
+    "- Return JUST the prompt text. No preamble, no surrounding quotes on " +
+    "the whole thing. The text you return becomes a heading.\n" +
+    "- Quote the morning intention verbatim (or a clear short fragment of " +
+    "it) so they see their own morning words paired with the evening " +
+    "question.\n" +
+    "- NEVER fabricate quoted text. Use only what is provided below.\n" +
+    "- At most two short sentences.";
+
+  const userParts = [];
+  userParts.push(
+    "This morning they wrote (verbatim):\n\n\"\"\"\n" +
+    morningText + "\n\"\"\"");
+  if (yesterdayEvening) {
+    userParts.push(
+      "For context (do not quote unless useful), yesterday evening they " +
+      "wrote:\n\n\"\"\"\n" + yesterdayEvening + "\n\"\"\"");
+  }
+  userParts.push("Generate the evening prompt now.");
+
+  const res = await Bridge.call("llm.complete", {
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: userParts.join("\n\n") },
+    ],
+  }, 120000);
+
+  if (res && res.ok && res.result && res.result.text) {
+    return cleanPrompt(res.result.text);
+  }
+  return null;
+}
+
+function cleanPrompt(t) {
+  let s = String(t).trim();
+  // strip wrapping surrounding quotes if the model wrapped the whole thing
+  if (/^["'“„«].*["'”»]$/s.test(s)) s = s.slice(1, -1).trim();
+  // strip "Here's your prompt:" style prefixes
+  s = s.replace(/^(here(?:'s| is) your prompt|prompt|morning|evening)\s*[:\-—]\s*/i, "");
+  return s;
+}
+
+/* save an entry. returns the new entry id if known, or null. */
+async function saveEntry({ kind, content, pairedId }) {
+  const metadata = {
+    kind: kind,                          // "daybook-morning" | "daybook-evening"
+    app: "daybook",
+    entry_date: todayIso(),
+    created: new Date().toISOString(),
+  };
+  if (pairedId) metadata.paired_id = pairedId;
+
+  const res = await Bridge.call("memory.write", {
+    layer: "episodic",
+    content: content,
+    source: "daybook",
+    metadata: metadata,
+  }, 30000);
+
+  if (!res || !res.ok) return { ok: false, error: res && res.error };
+  return {
+    ok: true,
+    id: res.result && (res.result.id || null),
+  };
+}
+
+/* ----------------------------------------------------------------------
+   Header (date + yesterday peek)
+---------------------------------------------------------------------- */
+function renderHeader(state) {
+  meta.innerHTML = "";
+  const d = el("div", "date", todayIso());
+  meta.appendChild(d);
+  const peekText = (state && state.yesterday_evening)
+    ? "yesterday evening: " + onelinePeek(state.yesterday_evening)
+    : "no entry from yesterday evening";
+  const p = el("div", "peek", escapeHtml(peekText));
+  meta.appendChild(p);
+}
+function onelinePeek(text) {
+  const oneLine = String(text).replace(/\s+/g, " ").trim();
+  return oneLine.length > 140 ? oneLine.slice(0, 138) + "…" : oneLine;
+}
+
+/* ----------------------------------------------------------------------
+   Views
+---------------------------------------------------------------------- */
+function viewPreparing(label) {
+  const v = el("div", "view preparing");
+  v.appendChild(el("div", "pulse", label || "Opening your daybook"));
+  v.appendChild(el("div", "note", "Your brain is reading the day so far."));
+  show(v);
+}
+
+function viewStandalone() {
+  modeTag.textContent = "standalone · no brain attached";
+  const v = el("div", "view");
+  v.appendChild(el("div", "notice",
+    "<b>No brain connected.</b><br><br>" +
+    "Daybook borrows your brain's reasoner and memory — it has nothing to " +
+    "ask without one. Open this app inside a BrainFoundry brain " +
+    "(<i>Settings → Apps → paste GitHub URL → Approve</i>) to use it."));
+  show(v);
+}
+
+function viewBrainUnreachable() {
+  modeTag.textContent = "host present · brain did not answer";
+  const v = el("div", "view");
+  v.appendChild(el("div", "notice",
+    "<b>Your brain didn't answer.</b><br><br>" +
+    "Daybook needs the brain to read the day so far and to generate " +
+    "today's prompt. Try again in a moment — if it keeps failing, check " +
+    "that your brain's model is selected and reachable."));
+  const again = el("button", "cta ghost", "Try again");
+  again.style.marginTop = "16px";
+  again.onclick = boot;
+  v.appendChild(again);
+  show(v);
+}
+
+function viewAlreadyWritten(slot, content) {
+  const isMorning = (slot === "morning");
+  modeTag.textContent = "saved · " + (isMorning ? "morning" : "evening") + " of " + todayIso();
+
+  const v = el("div", "view");
+  v.appendChild(el("div", "slot-tag",
+    "Already saved today · " + (isMorning ? "morning" : "evening")));
+
+  const book = el("div", "booklet");
+  book.appendChild(el("div", "plate",
+    isMorning ? "Morning intention" : "Evening reflection"));
+  book.appendChild(el("div", "stamp", todayIso()));
+
+  const body = el("div", "entry-body collapsed", escapeHtml(content));
+  book.appendChild(body);
+
+  if (content.length > 280 || content.split("\n").length > 5) {
+    const ex = el("button", "expand", "Read full");
+    ex.onclick = () => {
+      body.classList.remove("collapsed");
+      ex.remove();
+    };
+    book.appendChild(ex);
+  } else {
+    body.classList.remove("collapsed");
+  }
+  v.appendChild(book);
+  show(v);
+}
+
+function viewPrompt(slot, promptText, ctx) {
+  const isMorning = (slot === "morning");
+  modeTag.textContent = (isMorning ? "morning" : "evening") + " · live · prompt over your corpus";
+
+  const v = el("div", "view");
+  v.appendChild(el("div", "slot-tag", isMorning ? "This morning" : "This evening"));
+  v.appendChild(el("div", "prompt", escapeHtml(promptText)));
+
+  const ta = el("textarea", "entry");
+  ta.placeholder = isMorning
+    ? "Write the intention…"
+    : "Write what actually happened…";
+  v.appendChild(ta);
+
+  const saved = el("div", "saved-flag");
+  const acts = el("div", "actions");
+
+  const save = el("button", "cta", "Save");
+  save.disabled = true;
+  ta.addEventListener("input", () => { save.disabled = !ta.value.trim(); });
+
+  save.onclick = async () => {
+    const content = ta.value.trim();
+    if (!content) return;
+    save.disabled = true;
+    save.textContent = "Saving…";
+    const pairedId = isMorning
+      ? null
+      : (localStorage.getItem(pairCacheKey(todayIso())) || null);
+    const out = await saveEntry({
+      kind: isMorning ? "daybook-morning" : "daybook-evening",
+      content: content,
+      pairedId: pairedId,
+    });
+    if (!out.ok) {
+      save.disabled = false;
+      save.textContent = "Save";
+      saved.style.color = "var(--ink-dim)";
+      saved.textContent = Bridge.standalone
+        ? "No brain attached — cannot save."
+        : "Save failed — your brain didn't answer.";
+      return;
+    }
+    // cache morning id so evening can link to it later
+    if (isMorning && out.id) {
+      try { localStorage.setItem(pairCacheKey(todayIso()), out.id); } catch (_) {}
+    }
+    saved.style.color = "var(--gold)";
+    saved.textContent = "Saved to your brain.";
+    // re-render as already-written
+    setTimeout(() => viewAlreadyWritten(slot, content), 700);
+  };
+
+  acts.appendChild(save);
+  v.appendChild(acts);
+  v.appendChild(saved);
+  show(v);
+  setTimeout(() => ta.focus(), 50);
+}
+
+/* ----------------------------------------------------------------------
+   Boot — decide the mode and route to the right view
+---------------------------------------------------------------------- */
+async function boot() {
+  modeTag.textContent = "";
+  renderHeader(null);
+
+  if (Bridge.standalone) {
+    viewStandalone();
+    return;
+  }
+
+  viewPreparing("Opening your daybook");
+
+  const today = todayIso();
+  const yesterday = yesterdayIso();
+  const state = await fetchState(today, yesterday);
+
+  // host present but state fetch failed — show a clear "brain didn't answer" notice
+  if (!state) {
+    viewBrainUnreachable();
+    return;
+  }
+
+  renderHeader(state);
+
+  const slot = isEveningSlot() ? "evening" : "morning";
+
+  // already-written for the current slot → show it inline
+  if (slot === "morning" && state.today_morning) {
+    viewAlreadyWritten("morning", state.today_morning);
+    return;
+  }
+  if (slot === "evening" && state.today_evening) {
+    viewAlreadyWritten("evening", state.today_evening);
+    return;
+  }
+
+  // otherwise generate the prompt for this slot
+  viewPreparing("Your brain is choosing what to ask");
+
+  let prompt = null;
+  if (slot === "morning") {
+    prompt = await generateMorningPrompt(today, state.yesterday_evening);
+  } else {
+    // evening — needs the morning intention. If absent (operator skipped
+    // the morning), fall back to a corpus-grounded evening question.
+    if (state.today_morning) {
+      prompt = await generateEveningPrompt(today, state.today_morning, state.yesterday_evening);
+    } else {
+      prompt = await generateMorningPrompt(today, state.yesterday_evening);
+      // (it's evening, but there's no morning to quote — treat like a fresh
+      // intention-shaped question; the slot still saves as evening so a
+      // missed morning doesn't compound.)
+    }
+  }
+
+  if (!prompt) {
+    viewBrainUnreachable();
+    return;
+  }
+  viewPrompt(slot, prompt, state);
+}
+
+boot();
+</script>
+</body>
+</html>
